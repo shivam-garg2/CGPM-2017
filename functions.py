@@ -1,7 +1,5 @@
-import ezdxf as ez
-from axes3d import axes3d
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+import helpers
+from helpers import *
 
 def get_EV(filename, invert = False):
 	dwg = ez.readfile(filename)
@@ -34,29 +32,6 @@ def get_view(view_1, view_2):
 		edges[i] = tuple(sorted(sorted(edges[i], key = lambda v: v[1]), key = lambda v: v[0]))
 	return {'Edges': edges, 'Vertices': vertices}
 
-def is_vertex_on_edge_2D(vertex, line):
-	epsilon = 1e-4
-	v1 = line[0]
-	v2 = line[-1]
-	if vertex[0] != v2[0]:
-		lam = float(v1[0] - v2[0])/(vertex[0] - v2[0])
-		if lam > 1:
-			if abs(v1[1] - v2[1] - lam*(vertex[1] - v2[1])) < epsilon:
-				return True
-	elif vertex[0] == v2[0] and vertex[0] == v1[0]:
-		y_low, y_high = sorted([v1[1], v2[1]])
-		if y_low < vertex[1] < y_high:
-			return True
-	return False
-
-def is_vertex_internal(vertex, lines):
-	result = False
-	for line in lines:
-		if is_vertex_on_edge_2D(vertex, line):
-			result = True
-			break
-	return result
-
 def edge_breakdown(projection):
 	edges = projection['Edges']
 	vertices = projection['Vertices']
@@ -88,17 +63,7 @@ def edge_breakdown(projection):
 			lines.append(edge)
 	return {'Edges' : new_edges, 'Vertices' : vertices, 'Lines': lines}
 
-def is_p_edge(v1, v2, projection):
-	if v1 == v2:
-		if (v1 in projection['Vertices']) or is_vertex_internal(v1, projection['Lines']):
-			return 1
-	else:
-		for line in projection['Lines']:
-			if (v1 in line or is_vertex_on_edge_2D(v1, line)) and (v2 in line or is_vertex_on_edge_2D(v2, line)):
-				return 2
-	return 0
-
-def generate_pseudo_skeleton(projections):
+def generate_pseudo_wireframe(projections):
 	candidate_vertices = {}
 	proj_vertex_freqs = {}
 	for key in projections.keys():
@@ -140,8 +105,6 @@ def generate_pseudo_skeleton(projections):
 		for vertex_yz in proj_vertex_freqs['YZ'].keys():
 			if vertex_xy[1] == vertex_yz[0]:
 				candidate_vertex = (vertex_xy[0], vertex_yz[0], vertex_yz[1])
-				if candidate_vertex == (50.0, 35.0, 0.0):
-					import pdb; pdb.set_trace()
 				if candidate_vertex not in candidate_vertices.keys():
 					candidate_vertices[candidate_vertex] = {'XY' : vertex_xy, 'YZ': vertex_yz, 'XZ': None}
 					proj_vertex_freqs['YZ'][vertex_yz].append(candidate_vertex)
@@ -173,7 +136,7 @@ def generate_pseudo_skeleton(projections):
 
 	#Get skeletal edges
 	candidate_vertex_list = candidate_vertices.keys()
-	candidate_edges = []
+	candidate_edges_temp = []
 	for i in range(len(candidate_vertex_list)):
 		for j in range(i+1, len(candidate_vertex_list)):
 			vertex_i = candidate_vertex_list[i]
@@ -183,20 +146,125 @@ def generate_pseudo_skeleton(projections):
 			xz = lambda v: (v[0],v[2])
 			status = [is_p_edge(xy(vertex_i), xy(vertex_j), projections['XY']), is_p_edge(yz(vertex_i), yz(vertex_j), projections['YZ']), is_p_edge(xz(vertex_i), xz(vertex_j), projections['XZ'])]
 			if status == [2,2,2] or sorted(status) == [1,2,2]:
-				candidate_edges.append((vertex_i, vertex_j))
+				candidate_edges_temp.append((vertex_i, vertex_j))
+	candidate_edges = []
+	for i in range(len(candidate_edges_temp)):
+		intermediate_vertices = []
+		for j in range(len(candidate_edges_temp)):
+			if j != i:
+				x = edges_intersect_3D(candidate_edges_temp[i], candidate_edges_temp[j])
+				if x is not None:
+					intermediate_vertices.append(x)
+		vertices = tuple(sorted(sorted(sorted(intermediate_vertices + list(candidate_edges_temp[i]), key = lambda v: v[2]), key = lambda v: v[1]), key = lambda v: v[0]))
+		for k in range(len(vertices)-1):
+			candidate_edges.append((vertices[k], vertices[k+1]))
 	return candidate_edges, candidate_vertex_list
 
-if __name__ == '__main__':
-	front_view = 'paper_front.dxf'
-	back_view = 'paper_back.dxf'
-	top_view = 'paper_top.dxf'
-	bottom_view = 'paper_bottom.dxf'
-	left_view = 'paper_left.dxf'
-	right_view = 'paper_right.dxf'
-	projections = {}
-	projections['XY'] = edge_breakdown(get_view(top_view, bottom_view))
-	projections['XZ'] = edge_breakdown(get_view(front_view, back_view))
-	projections['YZ'] = edge_breakdown(get_view(right_view, left_view))
-	a,b = generate_pseudo_skeleton(projections)
-	axes3d(a)
-	print b
+def get_planes_and_faces(edges, vertices):
+	for i in range(len(edges)):
+		edges[i] = tuple(sorted(sorted(sorted(edges[i], key = lambda v: v[2]), key = lambda v: v[1]), key = lambda v: v[0]))
+
+	#extract the individual vertices
+	#vertices = []
+	#for edge in edges:
+	#	vertices += edge
+	#vertices = list(set(vertices))
+
+	#identify the edges passing through a particular vertice
+	vertex_edges = {}
+	for vertex in vertices:
+		for edge in edges:
+			if vertex in edge:
+				vertex_edges[vertex] = vertex_edges.get(vertex, []) + [edge]
+
+	#Taking out the vectors that form a plane and neighbouring vertices to vertex
+	vertex_diff_vertex = {}
+	vertex_vertex = {}
+	for vertex in vertex_edges.keys():
+		edge_vertices = []
+		vertex_neighbours = []
+		for edge in vertex_edges[vertex]:
+			if edge[0] == vertex:
+				vertex_neighbours.append(edge[1])
+				edge_vertices.append(subtract(edge[1], vertex))
+			else:
+				vertex_neighbours.append(edge[0])
+				edge_vertices.append(subtract(edge[0], vertex))
+		vertex_diff_vertex[vertex] = edge_vertices
+		vertex_vertex[vertex] = vertex_neighbours
+
+	#Generating the planes
+	planes = {}
+	for vertex in vertex_edges.keys():
+		for i in range(len(vertex_edges[vertex])):
+			for j in range(i+1, len(vertex_edges[vertex])):
+				plane_vertices = list(set(vertex_edges[vertex][i] + vertex_edges[vertex][j]))
+				normal = normalize(cross(vertex_diff_vertex[vertex][i], vertex_diff_vertex[vertex][j]))
+				if normal != (0.0, 0.0, 0.0):
+					intercept = get_intercept(normal, vertex)
+					plane = tuple(list(normal) + [intercept])
+					planes[plane] = list(set(planes.get(plane, []) + plane_vertices))
+
+	#fig = plt.figure()
+	#ax = fig.add_subplot(111, projection='3d')
+	
+	for key in planes:
+		x_sort = sorted(planes[key], key = lambda v: v[0])
+		y_sort = sorted(planes[key], key = lambda v: v[1])
+		z_sort = sorted(planes[key], key = lambda v: v[2])
+		x_min = int(x_sort[0][0]); x_max = int(x_sort[-1][0]) + 1
+		y_min = int(y_sort[0][1]); y_max = int(y_sort[-1][1]) + 1
+		z_min = int(z_sort[0][2]); z_max = int(z_sort[-1][2]) + 1
+		if key[2] == 0:
+			if key[1] != 0:
+				xx, zz = np.meshgrid(range(x_min, x_max), range(z_min, z_max))
+				yy = (-key[0]*xx - key[3])/key[1]
+			else:
+				yy, zz = np.meshgrid(range(y_min, y_max), range(z_min, z_max))
+				xx = -key[3]/key[0]
+		else:
+			xx, yy = np.meshgrid(range(x_min, x_max), range(y_min, y_max))
+			zz = (-key[0]*xx - key[1]*yy - key[3])*1 / key[2]
+
+		#plt3d = plt.figure().gca(projection='3d')
+		#ax.plot_surface(xx,yy,zz)
+
+	#plt.axis('off')
+	#plt.show()
+
+	#Identifying Correct 1 Cycle 
+	cycles = []
+	for plane in planes: 
+		points_in_plane = planes[plane]
+		#edge_buffer = []
+		#for vertex in points_in_plane:
+		#	for edge in vertex_edges[vertex]:
+		#		if edge[0] in points_in_plane and edge[1] in points_in_plane and edge not in edge_buffer:
+		#			edge_buffer.append(edge)
+		#print edge_buffer
+		#while len(edge_buffer) > 0:
+		#	found_face = False
+		leaves = []
+		root_v = points_in_plane[0]
+		root = Node(root_v)
+		queue = [Node(vertex, root) for vertex in vertex_vertex[root.value] if vertex in points_in_plane]
+		for node in queue:
+			is_loop = node.traverse_ancestors()
+			if is_loop > 0:
+				leaves.append(node)
+				continue
+			#elif is_loop == 2:
+				#face = node.get_face()
+				#for i in range(len(face)-1):
+				#	edge = tuple(sorted(sorted(sorted((face[i], face[i+1]), key = lambda v: v[2]), key = lambda v: v[1]), key = lambda v: v[0]))
+				#	if edge in edge_buffer:
+				#		edge_buffer.remove(edge)
+				#faces.append(face)
+				#found_face = True
+				#break
+			queue.extend([Node(vertex, node) for vertex in vertex_vertex[tuple([round(i,5) for i in node.value])] if (vertex != node.parent.value and vertex in points_in_plane)])
+		for leaf in leaves:
+			cycle = leaf.get_face()
+			print cycle
+			cycles.append(cycle)
+
