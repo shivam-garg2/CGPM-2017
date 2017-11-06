@@ -205,8 +205,8 @@ def get_planes_and_faces(edges, vertices):
 					plane = tuple(list(normal) + [intercept])
 					planes[plane] = list(set(planes.get(plane, []) + plane_vertices))
 
-	#fig = plt.figure()
-	#ax = fig.add_subplot(111, projection='3d')
+	fig = plt.figure()
+	ax = fig.add_subplot(111, projection='3d')
 	
 	for key in planes:
 		x_sort = sorted(planes[key], key = lambda v: v[0])
@@ -227,10 +227,10 @@ def get_planes_and_faces(edges, vertices):
 			zz = (-key[0]*xx - key[1]*yy - key[3])*1 / key[2]
 
 		#plt3d = plt.figure().gca(projection='3d')
-		#ax.plot_surface(xx,yy,zz)
+		ax.plot_surface(xx,yy,zz)
 
-	#plt.axis('off')
-	#plt.show()
+	plt.axis('off')
+	plt.show()
 
 	#Identifying Correct 1 Cycle 
 	cycles = []
